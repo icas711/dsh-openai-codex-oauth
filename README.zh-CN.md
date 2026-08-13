@@ -6,6 +6,8 @@
 
 这个包提供交互式登录、凭据保存、令牌刷新、登录状态查询和退出登录命令。Agent 运行时由 DeepSeek Harness 提供。OAuth 流程来自 `@earendil-works/pi-ai`，模型请求适配由 `@deepseek-ai/dsh-llm-pi-ai` 提供。
 
+只是为了好玩。
+
 ## 工作方式
 
 ```text
@@ -103,6 +105,12 @@ Harness 插件条目接受以下配置：
 OAuth 访问令牌和刷新令牌能够访问对应的 OpenAI 账户。请保护 Harness 凭据文件，将账户控制权保持在本人范围内，并在账户用量额度内使用。订阅访问受 OpenAI 服务条款和对应套餐规则约束。
 
 Codex 后端及其请求格式可能发生变化。后续 OpenAI 或 `pi-ai` 版本可能带来兼容性更新需求。
+
+## 致谢
+
+本项目使用 DeepSeek Harness 官方的 [`@deepseek-ai/dsh-llm-pi-ai`](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-pi-ai) 适配器连接 Harness 大语言模型接口与 `pi-ai`，并使用 [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai) 提供的 OpenAI Codex OAuth 和模型提供方实现。
+
+两个上游项目均采用 MIT 许可证发布。相关版权声明和完整许可文本收录在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中。
 
 ## 项目说明
 

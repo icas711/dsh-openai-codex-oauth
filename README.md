@@ -6,6 +6,8 @@ ChatGPT subscription OAuth for the `openai-codex` provider in DeepSeek Harness.
 
 This package adds interactive login, credential persistence, token refresh, login status, and logout commands. DeepSeek Harness remains the agent runtime. The package uses the OAuth implementation exposed by `@earendil-works/pi-ai` and the model adapter supplied by `@deepseek-ai/dsh-llm-pi-ai`.
 
+Just for fun.
+
 ## How it works
 
 ```text
@@ -103,6 +105,12 @@ The plugin stores the complete OAuth credential under `OPENAI_CODEX_OAUTH_CREDEN
 OAuth access and refresh tokens grant access to the associated OpenAI account. Keep the Harness credential file private, keep the account under one user's control, and use the integration within the account's usage allowance. OpenAI service terms and plan-specific rules govern subscription access.
 
 The Codex backend and its request format may change. A future OpenAI or `pi-ai` release can require a compatibility update.
+
+## Acknowledgements
+
+This project uses DeepSeek Harness's official [`@deepseek-ai/dsh-llm-pi-ai`](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-pi-ai) adapter to connect the Harness LLM interface with `pi-ai`. It uses [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai) for the OpenAI Codex OAuth and provider implementations.
+
+Both upstream projects are distributed under the MIT License. Their copyright notices and license texts are included in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Project status
 
