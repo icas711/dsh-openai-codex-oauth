@@ -96,35 +96,7 @@ Harness 插件条目接受以下配置：
     refreshBeforeMs: 300000
 ```
 
-`refreshBeforeMs` 的单位为毫秒。默认值会在访问令牌到期前 5 分钟执行刷新。
-
 完整 OAuth 凭据保存在 `OPENAI_CODEX_OAUTH_CREDENTIAL` 引用中，当前访问令牌保存在 `OPENAI_CODEX_ACCESS_TOKEN` 引用中。采用默认本机凭据来源时，Harness 通常会把这些值写入 `~/.dsh/.credentials.yaml`，文件权限由当前本机用户持有。
-
-## 常见问题
-
-### 端口 3080 已被占用
-
-这通常表示 Harness Web 已经监听端口 `3080`。检查对应进程：
-
-```sh
-lsof -nP -iTCP:3080 -sTCP:LISTEN
-```
-
-随后打开现有 Harness 页面，或者结束对应进程并启动新的 Web 实例。
-
-### 浏览器登录无法启动
-
-检查端口 `1455`：
-
-```sh
-lsof -nP -iTCP:1455 -sTCP:LISTEN
-```
-
-释放端口后再次运行 `/codex-login browser`。远程主机可使用设备码登录，具体可用性由 OpenAI 账户的授权流程决定。
-
-### 登录成功后模型请求失败
-
-运行 `/codex-status`，确认模型提供方为 `openai-codex`。安装内容发生变化后，请重新启动 Harness profile。
 
 ## 凭据安全与服务条款
 
@@ -139,4 +111,3 @@ Codex 后端及其请求格式可能发生变化。后续 OpenAI 或 `pi-ai` 版
 ## 许可证
 
 [MIT](LICENSE)
-

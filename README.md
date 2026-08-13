@@ -96,35 +96,7 @@ The generated Harness plugin entry accepts:
     refreshBeforeMs: 300000
 ```
 
-`refreshBeforeMs` is measured in milliseconds. The default value refreshes the access token five minutes before expiry.
-
 The plugin stores the complete OAuth credential under `OPENAI_CODEX_OAUTH_CREDENTIAL` and the current access token under `OPENAI_CODEX_ACCESS_TOKEN`. With the default local credential source, Harness commonly writes these values to `~/.dsh/.credentials.yaml` with permissions scoped to the local user.
-
-## Troubleshooting
-
-### Port 3080 is already in use
-
-Harness Web already has a listener on port `3080`. Check the owning process:
-
-```sh
-lsof -nP -iTCP:3080 -sTCP:LISTEN
-```
-
-Open the existing Harness page or stop that process before starting another Web instance.
-
-### Browser login cannot start
-
-Check port `1455`:
-
-```sh
-lsof -nP -iTCP:1455 -sTCP:LISTEN
-```
-
-Release the port and run `/codex-login browser` again. The device-code method is useful on remote hosts when the OpenAI account supports that flow.
-
-### Login succeeds and model requests fail
-
-Run `/codex-status`, confirm that the selected model uses provider `openai-codex`, and restart the Harness profile after installation changes.
 
 ## Security and service terms
 
@@ -139,4 +111,3 @@ This is an independent community integration for DeepSeek Harness. OpenAI, DeepS
 ## License
 
 [MIT](LICENSE)
-
