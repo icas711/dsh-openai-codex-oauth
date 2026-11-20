@@ -2,11 +2,19 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { credentialRef, type CredentialInfo, type CredentialRef, type ResolvedCredential } from '@deepseek-ai/dsh-credentials'
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import type { ImageAttachmentRef, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { WebSearchProvider } from '@deepseek-ai/dsh-web'
 import z from '@deepseek-ai/schemastery'
 import type { AuthEvent, AuthInteraction, AuthPrompt, OAuthAuth, OAuthCredential } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-user-questions'
+import { DEFAULT_CODEX_RESPONSES_URL, DEFAULT_ORIGINATOR, accountIdOf, type CodexCallCredential } from './codex-api.ts'
+import { DEFAULT_USAGE_URL, USAGE_CACHE_MS, fetchCodexUsage, usageErrorText, usageText, type CodexUsage } from './usage.ts'
+import { CODEX_SEARCH_PROVIDER_ID, DEFAULT_SEARCH_MODEL, CodexSearchProvider } from './web-search.ts'
+import { DEFAULT_IMAGE_MODEL, defineCodexImageTool } from './image-tool.ts'
+import { defineCodexUsageTool } from './usage-tool.ts'
 
 export const name = 'openai-codex-oauth'
 export const inject = ['commands', 'credentials', 'userQuestions']
@@ -15,6 +23,7 @@ const PROVIDER = 'openai-codex'
 const DEFAULT_OAUTH_CREDENTIAL_REF = 'OPENAI_CODEX_OAUTH_CREDENTIAL'
 const DEFAULT_ACCESS_TOKEN_REF = 'OPENAI_CODEX_ACCESS_TOKEN'
 const DEFAULT_REFRESH_BEFORE_MS = 5 * 60 * 1000
+const PRESENCE_REFRESH_INTERVAL_MS = 30_000
 const WAIT_FOR_CALLBACK_LABEL = 'Жду автоматического возврата из браузера'
 
 export interface Config {
@@ -22,17 +31,53 @@ export interface Config {
   oauthCredentialRef?: string
   /** Refresh an expiring credential this many milliseconds before its expiry time. */
   refreshBeforeMs?: number
+  /** Responses endpoint of the ChatGPT Codex backend used by search and image generation. */
+  responsesUrl?: string
+  /** `wham/usage` endpoint serving subscription quotas. */
+  usageUrl?: string
+  /** Quota cache lifetime for /codex-usage. */
+  usageCacheMs?: number
+  /** Register the read-only codex_usage tool for the model. Off until the live response is confirmed stable. */
+  usageTool?: boolean
+  /** Register the openai-codex web-search provider on ctx.web. */
+  searchEnabled?: boolean
+  /** Model used for hosted web search. */
+  searchModel?: string
+  /** Register the generate_image tool (requires tools + attachments services). */
+  imageEnabled?: boolean
+  /** Model used for image generation. */
+  imageModel?: string
+  /** Value of the originator header on direct Codex backend calls. */
+  originator?: string
 }
 
 export const Config: z<Config> = z.object({
   oauthCredentialRef: z.string().role('credential-ref').default(DEFAULT_OAUTH_CREDENTIAL_REF),
   refreshBeforeMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_REFRESH_BEFORE_MS),
+  responsesUrl: z.string().default(DEFAULT_CODEX_RESPONSES_URL),
+  usageUrl: z.string().default(DEFAULT_USAGE_URL),
+  usageCacheMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(USAGE_CACHE_MS),
+  usageTool: z.boolean().default(false),
+  searchEnabled: z.boolean().default(true),
+  searchModel: z.string().default(DEFAULT_SEARCH_MODEL),
+  imageEnabled: z.boolean().default(true),
+  imageModel: z.string().default(DEFAULT_IMAGE_MODEL),
+  originator: z.string().default(DEFAULT_ORIGINATOR),
 })
 
 interface ResolvedConfig {
   oauthCredentialRef: CredentialRef
   accessTokenRef: CredentialRef
   refreshBeforeMs: number
+  responsesUrl: string
+  usageUrl: string
+  usageCacheMs: number
+  usageTool: boolean
+  searchEnabled: boolean
+  searchModel: string
+  imageEnabled: boolean
+  imageModel: string
+  originator: string
 }
 
 interface DeviceNotice {
@@ -68,6 +113,21 @@ export interface CredentialStore {
   describe(ref: CredentialRef): Promise<CredentialInfo>
   set(ref: CredentialRef, value: string): Promise<void>
   unset(ref: CredentialRef): Promise<void>
+}
+
+/** Optional view of the tools registry (`ctx.tools`). */
+interface ToolsView {
+  register(definition: ToolDefinition): () => void
+}
+
+/** Optional view of the attachment service (`ctx.attachments`). */
+interface AttachmentsView {
+  saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef>
+}
+
+/** Optional view of the web seam (`ctx.web`). */
+interface WebRuntimeView {
+  registerSearchProvider(provider: WebSearchProvider): () => void
 }
 
 /** Read an optional service without declaring it in the ambient Context. */
@@ -384,6 +444,14 @@ export function logoutSuccessText(owner: string | undefined): string {
   return `Учётные данные OpenAI Codex OAuth удалены. Хранилище: ${scopeLabel(owner)}.`
 }
 
+/** Exported for unit tests. */
+export function usageCommandHint(rawInput: string): 'cache' | 'refresh' | 'error' {
+  const value = rawInput.trim().toLowerCase()
+  if (value.length === 0) return 'cache'
+  if (value === 'refresh') return 'refresh'
+  return 'error'
+}
+
 async function assertWritable(store: CredentialStore, ref: CredentialRef): Promise<void> {
   const info = await store.describe(ref)
   if (!info.writable) {
@@ -405,6 +473,15 @@ function resolveConfig(config: Config): ResolvedConfig {
     oauthCredentialRef: credentialRef(config.oauthCredentialRef ?? DEFAULT_OAUTH_CREDENTIAL_REF),
     accessTokenRef: credentialRef(DEFAULT_ACCESS_TOKEN_REF),
     refreshBeforeMs: config.refreshBeforeMs ?? DEFAULT_REFRESH_BEFORE_MS,
+    responsesUrl: config.responsesUrl ?? DEFAULT_CODEX_RESPONSES_URL,
+    usageUrl: config.usageUrl ?? DEFAULT_USAGE_URL,
+    usageCacheMs: config.usageCacheMs ?? USAGE_CACHE_MS,
+    usageTool: config.usageTool ?? false,
+    searchEnabled: config.searchEnabled ?? true,
+    searchModel: config.searchModel ?? DEFAULT_SEARCH_MODEL,
+    imageEnabled: config.imageEnabled ?? true,
+    imageModel: config.imageModel ?? DEFAULT_IMAGE_MODEL,
+    originator: config.originator ?? DEFAULT_ORIGINATOR,
   }
 }
 
@@ -414,9 +491,46 @@ export function apply(ctx: Context, config: Config): void {
   const exclusive = createExclusiveRunner()
   let loginInProgress = false
 
+  // Область видимости учётных данных для шины без контекста сессии
+  // (веб-поиск): последняя сессия, начавшая запрос к модели. См. README,
+  // «Ограничения» — при одновременных ходах разных владельцев возможна
+  // подмена области; контекст сессии в web-шине недоступен.
+  let lastSessionId: string | undefined
+  // Дешёвая проверка наличия учётных данных для available() провайдера.
+  let credentialPresent = false
+  let presenceCheckedAt = 0
+
   const persist = async (store: CredentialStore, credential: OAuthCredential): Promise<void> => {
     await store.set(resolved.oauthCredentialRef, JSON.stringify(credential))
     await store.set(resolved.accessTokenRef, credential.access)
+  }
+
+  const refreshCredentialPresence = (): Promise<void> => (async () => {
+    presenceCheckedAt = Date.now()
+    const scopes: Array<string | undefined> = [undefined]
+    const trackedOwner = await resolveOwner(ctx, lastSessionId)
+    if (trackedOwner !== undefined) scopes.push(trackedOwner)
+    for (const scope of scopes) {
+      const store = storeFor(ctx, scope)
+      if (await store.resolve(resolved.oauthCredentialRef) !== undefined) {
+        credentialPresent = true
+        return
+      }
+      const access = await store.resolve(resolved.accessTokenRef)
+      if (access !== undefined && access.value.length > 0 && access.source !== 'file') {
+        credentialPresent = true
+        return
+      }
+    }
+    credentialPresent = false
+  })().catch((error: unknown) => {
+    ctx.logger.warn(`openai-codex-oauth: presence check failed: ${error instanceof Error ? error.message : String(error)}`)
+  })
+
+  /** Периодически обновлять флаг наличия учётных данных (не чаще раза в 30 с). */
+  const maybeRefreshCredentialPresence = (force = false): Promise<void> => {
+    if (!force && Date.now() - presenceCheckedAt <= PRESENCE_REFRESH_INTERVAL_MS) return Promise.resolve()
+    return refreshCredentialPresence()
   }
 
   const ensureAccessToken = (owner: string | undefined, signal: AbortSignal, diag: OwnerResolveDiag): Promise<void> => exclusive(async () => {
@@ -434,6 +548,7 @@ export function apply(ctx: Context, config: Config): void {
       // plugin-writable file store.
       const access = await store.resolve(resolved.accessTokenRef)
       if (access !== undefined && access.value.length > 0 && access.source !== 'file') return
+      credentialPresent = false
       throw new LlmError(
         'Вход OpenAI Codex OAuth не настроен. Выполните /codex-login и повторите запрос.'
           + ` [diag: owner=${diag.owner ?? 'none'} session=${diag.sessionId ?? 'none'}`
@@ -463,6 +578,7 @@ export function apply(ctx: Context, config: Config): void {
       if (access === undefined || access.value !== credential.access) {
         await store.set(resolved.accessTokenRef, credential.access)
       }
+      credentialPresent = true
       return
     }
 
@@ -476,7 +592,41 @@ export function apply(ctx: Context, config: Config): void {
       )
     }
     await persist(store, refreshed)
+    credentialPresent = true
   })
+
+  /**
+   * Авторизация для прямых запросов к бэкенду Codex (квоты, поиск, картинки):
+   * обновляет access-токен при необходимости и достаёт идентификатор аккаунта.
+   */
+  const currentCredential = async (
+    owner: string | undefined,
+    signal: AbortSignal,
+    diag: OwnerResolveDiag,
+  ): Promise<CodexCallCredential> => {
+    await ensureAccessToken(owner, signal, diag)
+    const store = storeFor(ctx, owner)
+    let access: string | undefined
+    const stored = await store.resolve(resolved.oauthCredentialRef)
+    if (stored !== undefined) {
+      try {
+        access = parseOAuthCredential(stored.value).access
+      } catch (error: unknown) {
+        throw new LlmError(
+          'Хранимые учётные данные OpenAI Codex OAuth недействительны. Выполните /codex-login заново.',
+          'AUTH',
+          { cause: error },
+        )
+      }
+    } else {
+      const token = await store.resolve(resolved.accessTokenRef)
+      access = token?.value
+    }
+    if (access === undefined || access.length === 0) {
+      throw new LlmError('Вход OpenAI Codex OAuth не настроен. Выполните /codex-login.', 'AUTH')
+    }
+    return { access, accountId: accountIdOf({ access }) }
+  }
 
   const login = async (invocation: CommandInvocation): Promise<CommandResult> => {
     if (loginInProgress) return { kind: 'error', text: 'Вход OpenAI OAuth уже выполняется.' }
@@ -502,6 +652,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       const credential = await oauth.login(interaction)
       await exclusive(() => persist(store, credential))
+      credentialPresent = true
       return { kind: 'success', text: loginSuccessText(credential, owner) }
     } catch (error: unknown) {
       return { kind: 'error', text: safeLoginError(error) }
@@ -521,6 +672,7 @@ export function apply(ctx: Context, config: Config): void {
         await store.unset(resolved.oauthCredentialRef)
         await store.unset(resolved.accessTokenRef)
       })
+      await refreshCredentialPresence()
       return { kind: 'success', text: logoutSuccessText(owner) }
     } catch (error: unknown) {
       return { kind: 'error', text: safeLoginError(error) }
@@ -550,6 +702,35 @@ export function apply(ctx: Context, config: Config): void {
     return { kind: 'success', text: 'OpenAI Codex: вход не настроен. Запустите /codex-login.' }
   }
 
+  const usageCache = new Map<string, { usage: CodexUsage; at: number }>()
+
+  const usage = async (invocation: CommandInvocation): Promise<CommandResult> => {
+    const mode = usageCommandHint(invocation.rawInput)
+    if (mode === 'error') return { kind: 'error', text: 'Использование: /codex-usage [refresh]' }
+    try {
+      const sessionId = String(invocation.agent.id)
+      const diag = await resolveOwnerDiagOf(ctx, sessionId)
+      const key = diag.owner ?? 'deployment'
+      const cached = usageCache.get(key)
+      if (mode === 'cache' && cached !== undefined && Date.now() - cached.at <= resolved.usageCacheMs) {
+        return {
+          kind: 'success',
+          text: `${usageText(cached.usage)}\n\n(из кэша; /codex-usage refresh — обновить)`,
+        }
+      }
+      const credential = await currentCredential(diag.owner, invocation.signal, diag)
+      const fetched = await fetchCodexUsage({
+        credential,
+        usageUrl: resolved.usageUrl,
+        ...(invocation.signal === undefined ? {} : { signal: invocation.signal }),
+      })
+      usageCache.set(key, { usage: fetched, at: Date.now() })
+      return { kind: 'success', text: usageText(fetched) }
+    } catch (error: unknown) {
+      return { kind: 'error', text: usageErrorText(error) }
+    }
+  }
+
   ctx.commands.register({
     name: 'codex-login',
     description: 'Войти в OpenAI Codex через подписку ChatGPT Plus/Pro',
@@ -566,8 +747,81 @@ export function apply(ctx: Context, config: Config): void {
     description: 'Показать состояние OpenAI Codex OAuth',
     handler: status,
   })
+  ctx.commands.register({
+    name: 'codex-usage',
+    description: 'Показать квоту подписки ChatGPT (окна 5 ч / неделя)',
+    input: { hint: '[refresh]' },
+    handler: usage,
+  })
+
+  const resolveCredentialForSession = (
+    signal: AbortSignal | undefined,
+    sessionId: string | undefined,
+  ): Promise<CodexCallCredential> => {
+    const effective = signal ?? new AbortController().signal
+    return (async () => {
+      const diag = await resolveOwnerDiagOf(ctx, sessionId ?? lastSessionId)
+      return currentCredential(diag.owner, effective, diag)
+    })()
+  }
+
+  const web = serviceOf<WebRuntimeView>(ctx, 'web')
+  if (resolved.searchEnabled) {
+    if (web !== undefined) {
+      ctx.effect(() => {
+        const dispose = web.registerSearchProvider(new CodexSearchProvider({
+          hasCredential: () => credentialPresent,
+          resolveCredential: (signal, sessionId) => resolveCredentialForSession(signal, sessionId ?? lastSessionId),
+          endpoint: resolved.responsesUrl,
+          originator: resolved.originator,
+          model: resolved.searchModel,
+        }))
+        return () => dispose()
+      }, `openai-codex-oauth: провайдер веб-поиска ${CODEX_SEARCH_PROVIDER_ID}`)
+    } else {
+      ctx.logger.info('openai-codex-oauth: web-шина не установлена — провайдер поиска не зарегистрирован')
+    }
+  }
+
+  const tools = serviceOf<ToolsView>(ctx, 'tools')
+  if (tools !== undefined) {
+    if (resolved.usageTool) {
+      ctx.effect(() => {
+        const dispose = tools.register(defineCodexUsageTool({
+          usageUrl: resolved.usageUrl,
+          resolveCredential: (signal, sessionId) => resolveCredentialForSession(signal, sessionId ?? lastSessionId),
+        }))
+        return () => dispose()
+      }, 'openai-codex-oauth: инструмент codex_usage')
+    }
+    const attachments = serviceOf<AttachmentsView>(ctx, 'attachments')
+    if (resolved.imageEnabled) {
+      if (attachments !== undefined) {
+        ctx.effect(() => {
+          const dispose = tools.register(defineCodexImageTool({
+            model: resolved.imageModel,
+            endpoint: resolved.responsesUrl,
+            originator: resolved.originator,
+            resolveCredential: (signal, sessionId) => resolveCredentialForSession(signal, sessionId ?? lastSessionId),
+            saveImage: input => attachments.saveImage(input),
+          }))
+          return () => dispose()
+        }, 'openai-codex-oauth: инструмент generate_image')
+      } else {
+        ctx.logger.info('openai-codex-oauth: сервис вложений не установлен — генерация изображений недоступна')
+      }
+    }
+  } else if (resolved.usageTool || resolved.imageEnabled) {
+    ctx.logger.info('openai-codex-oauth: реестр инструментов не установлен — инструменты codex не зарегистрированы')
+  }
+
+  void maybeRefreshCredentialPresence(true)
 
   ctx.on('agent/request', async ({ agent, signal }, next) => {
+    if (agent !== undefined) {
+      lastSessionId = String(agent.id)
+      void maybeRefreshCredentialPresence()
+    }
     const request = await next()
     if (request.provider === PROVIDER) {
       const sessionId = agent === undefined ? undefined : String(agent.id)

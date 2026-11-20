@@ -9,6 +9,24 @@ export interface Config {
     oauthCredentialRef?: string;
     /** Refresh an expiring credential this many milliseconds before its expiry time. */
     refreshBeforeMs?: number;
+    /** Responses endpoint of the ChatGPT Codex backend used by search and image generation. */
+    responsesUrl?: string;
+    /** `wham/usage` endpoint serving subscription quotas. */
+    usageUrl?: string;
+    /** Quota cache lifetime for /codex-usage. */
+    usageCacheMs?: number;
+    /** Register the read-only codex_usage tool for the model. Off until the live response is confirmed stable. */
+    usageTool?: boolean;
+    /** Register the openai-codex web-search provider on ctx.web. */
+    searchEnabled?: boolean;
+    /** Model used for hosted web search. */
+    searchModel?: string;
+    /** Register the generate_image tool (requires tools + attachments services). */
+    imageEnabled?: boolean;
+    /** Model used for image generation. */
+    imageModel?: string;
+    /** Value of the originator header on direct Codex backend calls. */
+    originator?: string;
 }
 export declare const Config: z<Config>;
 /**
@@ -82,6 +100,8 @@ export declare function loginSuccessText(credential: OAuthCredential, owner: str
 export declare function statusSuccessText(credential: OAuthCredential, owner: string | undefined): string;
 /** Exported for unit tests. */
 export declare function logoutSuccessText(owner: string | undefined): string;
+/** Exported for unit tests. */
+export declare function usageCommandHint(rawInput: string): 'cache' | 'refresh' | 'error';
 export declare function apply(ctx: Context, config: Config): void;
 export {};
 //# sourceMappingURL=index.d.ts.map

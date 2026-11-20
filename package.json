@@ -1,6 +1,6 @@
 {
   "name": "dsh-openai-codex-oauth",
-  "version": "0.1.1-ru.3",
+  "version": "0.2.0-ru.1",
   "description": "ChatGPT Plus/Pro OAuth login for DeepSeek Harness openai-codex models",
   "type": "module",
   "main": "lib/index.js",
@@ -9,6 +9,26 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./codex-api": {
+      "types": "./lib/codex-api.d.ts",
+      "default": "./lib/codex-api.js"
+    },
+    "./usage": {
+      "types": "./lib/usage.d.ts",
+      "default": "./lib/usage.js"
+    },
+    "./usage-tool": {
+      "types": "./lib/usage-tool.d.ts",
+      "default": "./lib/usage-tool.js"
+    },
+    "./web-search": {
+      "types": "./lib/web-search.d.ts",
+      "default": "./lib/web-search.js"
+    },
+    "./image-tool": {
+      "types": "./lib/image-tool.d.ts",
+      "default": "./lib/image-tool.js"
     },
     "./package.json": "./package.json"
   },
@@ -45,20 +65,26 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-attachment": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-user-questions": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-web": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@earendil-works/pi-ai": "^0.82.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-attachment": "0.1.0-rc.6",
     "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "@deepseek-ai/dsh-user-questions": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-web": "0.1.0-rc.6",
     "@deepseek-ai/schemastery": "3.18.1",
     "@earendil-works/pi-ai": "0.82.1",
     "@types/node": "22.20.0",

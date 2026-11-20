@@ -13,6 +13,7 @@ import {
   safeLoginError,
   scopeLabel,
   statusSuccessText,
+  usageCommandHint,
 } from '../src/index.js'
 import type { PersonalCredentialsView } from '../src/index.js'
 
@@ -254,5 +255,15 @@ describe('owner-scoped result texts', () => {
     expect(logoutSuccessText(undefined)).toBe(
       'Учётные данные OpenAI Codex OAuth удалены. Хранилище: общее хранилище харнесса.',
     )
+  })
+})
+
+describe('usageCommandHint', () => {
+  it('reads the refresh argument case-insensitively', () => {
+    expect(usageCommandHint('')).toBe('cache')
+    expect(usageCommandHint('   ')).toBe('cache')
+    expect(usageCommandHint('refresh')).toBe('refresh')
+    expect(usageCommandHint(' Refresh ')).toBe('refresh')
+    expect(usageCommandHint('anything else')).toBe('error')
   })
 })
