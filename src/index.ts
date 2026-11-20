@@ -435,7 +435,14 @@ export function apply(ctx: Context, config: Config): void {
       const access = await store.resolve(resolved.accessTokenRef)
       if (access !== undefined && access.value.length > 0 && access.source !== 'file') return
       throw new LlmError(
-        'Вход OpenAI Codex OAuth не настроен. Выполните /codex-login и повторите запрос.',
+        'Вход OpenAI Codex OAuth не настроен. Выполните /codex-login и повторите запрос.'
+          + ` [diag: owner=${diag.owner ?? 'none'} session=${diag.sessionId ?? 'none'}`
+          + ` registry=${diag.registryServicePresent ? 'yes' : 'missing'}`
+          + ` registryHit=${diag.registryHit ? 'yes' : 'no'}`
+          + ` persistence=${diag.persistenceServicePresent ? 'yes' : 'missing'}`
+          + ` inspectOk=${diag.inspectOk ? 'yes' : 'no'}`
+          + ` inspectError=${diag.inspectError ?? 'none'}`
+          + ` scope=${store.scopeLabel}]`,
         'AUTH',
       )
     }
