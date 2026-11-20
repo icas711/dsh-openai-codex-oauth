@@ -75,6 +75,52 @@ function serviceOf<T>(ctx: Context, key: string): T | undefined {
   return (ctx as { get(key: string): unknown }).get(key) as T | undefined
 }
 
+export interface OwnerResolveDiag {
+  sessionId: string | undefined
+  registryServicePresent: boolean
+  persistenceServicePresent: boolean
+  registryHit: boolean
+  inspectOk: boolean
+  inspectError: string | undefined
+  owner: string | undefined
+}
+
+/** Exported for unit tests. */
+export async function resolveOwnerDiag(
+  views: {
+    credentialScopes?: OwnerRegistryView | undefined
+    sessionPersistence?: SessionPersistenceView | undefined
+  },
+  sessionId: string | undefined,
+): Promise<OwnerResolveDiag> {
+  const diag: OwnerResolveDiag = {
+    sessionId,
+    registryServicePresent: views.credentialScopes !== undefined,
+    persistenceServicePresent: views.sessionPersistence !== undefined,
+    registryHit: false,
+    inspectOk: false,
+    inspectError: undefined,
+    owner: undefined,
+  }
+  if (sessionId === undefined) return diag
+  const registered = views.credentialScopes?.ownerOf(sessionId)
+  if (registered !== undefined) {
+    diag.registryHit = true
+    diag.owner = registered
+    return diag
+  }
+  const persistence = views.sessionPersistence
+  if (persistence === undefined) return diag
+  try {
+    const { meta } = await persistence.inspect(sessionId)
+    diag.inspectOk = true
+    diag.owner = typeof meta.owner === 'string' && meta.owner.length > 0 ? meta.owner : undefined
+  } catch (error: unknown) {
+    diag.inspectError = error instanceof Error ? error.message : String(error)
+  }
+  return diag
+}
+
 /** Exported for unit tests. */
 export async function resolveOwnerFrom(
   views: {
@@ -83,21 +129,18 @@ export async function resolveOwnerFrom(
   },
   sessionId: string | undefined,
 ): Promise<string | undefined> {
-  if (sessionId === undefined) return undefined
-  const registered = views.credentialScopes?.ownerOf(sessionId)
-  if (registered !== undefined) return registered
-  const persistence = views.sessionPersistence
-  if (persistence === undefined) return undefined
-  try {
-    const { meta } = await persistence.inspect(sessionId)
-    return typeof meta.owner === 'string' && meta.owner.length > 0 ? meta.owner : undefined
-  } catch {
-    return undefined
-  }
+  return (await resolveOwnerDiag(views, sessionId)).owner
 }
 
 function resolveOwner(ctx: Context, sessionId: string | undefined): Promise<string | undefined> {
   return resolveOwnerFrom({
+    credentialScopes: serviceOf<OwnerRegistryView>(ctx, 'credentialScopes'),
+    sessionPersistence: serviceOf<SessionPersistenceView>(ctx, 'sessionPersistence'),
+  }, sessionId)
+}
+
+function resolveOwnerDiagOf(ctx: Context, sessionId: string | undefined): Promise<OwnerResolveDiag> {
+  return resolveOwnerDiag({
     credentialScopes: serviceOf<OwnerRegistryView>(ctx, 'credentialScopes'),
     sessionPersistence: serviceOf<SessionPersistenceView>(ctx, 'sessionPersistence'),
   }, sessionId)
@@ -376,10 +419,11 @@ export function apply(ctx: Context, config: Config): void {
     await store.set(resolved.accessTokenRef, credential.access)
   }
 
-  const ensureAccessToken = (owner: string | undefined, signal: AbortSignal): Promise<void> => exclusive(async () => {
+  const ensureAccessToken = (owner: string | undefined, signal: AbortSignal, diag: OwnerResolveDiag): Promise<void> => exclusive(async () => {
     if (signal.aborted) {
       throw new LlmError('Запрос к OpenAI Codex прерван до завершения аутентификации.', 'ABORTED')
     }
+    ctx.logger.info(`openai-codex-oauth: ensureAccessToken diag ${JSON.stringify(diag)}`)
     const store = storeFor(ctx, owner)
     const stored = await store.resolve(resolved.oauthCredentialRef)
 
@@ -518,7 +562,12 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.on('agent/request', async ({ agent, signal }, next) => {
     const request = await next()
-    if (request.provider === PROVIDER) await ensureAccessToken(agent === undefined ? undefined : String(agent.id), signal)
+    if (request.provider === PROVIDER) {
+      const sessionId = agent === undefined ? undefined : String(agent.id)
+      const diag = await resolveOwnerDiagOf(ctx, sessionId)
+      ctx.logger.info(`openai-codex-oauth: agent/request provider=${request.provider} model=${request.model} agentId=${sessionId ?? 'none'} diag=${JSON.stringify(diag)}`)
+      await ensureAccessToken(diag.owner, signal, diag)
+    }
     if (signal.aborted) {
       throw new LlmError('Запрос к OpenAI Codex прерван до завершения аутентификации.', 'ABORTED')
     }

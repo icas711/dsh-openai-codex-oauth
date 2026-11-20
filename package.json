@@ -1,6 +1,6 @@
 {
   "name": "dsh-openai-codex-oauth",
-  "version": "0.1.1-ru.2",
+  "version": "0.1.1-ru.3",
   "description": "ChatGPT Plus/Pro OAuth login for DeepSeek Harness openai-codex models",
   "type": "module",
   "main": "lib/index.js",

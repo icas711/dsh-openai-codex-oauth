@@ -41,6 +41,20 @@ export interface CredentialStore {
     set(ref: CredentialRef, value: string): Promise<void>;
     unset(ref: CredentialRef): Promise<void>;
 }
+export interface OwnerResolveDiag {
+    sessionId: string | undefined;
+    registryServicePresent: boolean;
+    persistenceServicePresent: boolean;
+    registryHit: boolean;
+    inspectOk: boolean;
+    inspectError: string | undefined;
+    owner: string | undefined;
+}
+/** Exported for unit tests. */
+export declare function resolveOwnerDiag(views: {
+    credentialScopes?: OwnerRegistryView | undefined;
+    sessionPersistence?: SessionPersistenceView | undefined;
+}, sessionId: string | undefined): Promise<OwnerResolveDiag>;
 /** Exported for unit tests. */
 export declare function resolveOwnerFrom(views: {
     credentialScopes?: OwnerRegistryView | undefined;
