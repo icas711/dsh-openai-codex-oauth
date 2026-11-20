@@ -48,7 +48,8 @@ function oauthAuth(): OAuthAuth {
   return oauth
 }
 
-function parseOAuthCredential(raw: string): OAuthCredential {
+/** Exported for unit tests. */
+export function parseOAuthCredential(raw: string): OAuthCredential {
   let value: unknown
   try {
     value = JSON.parse(raw)
@@ -68,7 +69,8 @@ function parseOAuthCredential(raw: string): OAuthCredential {
   return value as OAuthCredential
 }
 
-function answerValue(answer: Awaited<ReturnType<Context['userQuestions']['ask']>>, id: string): string {
+/** Exported for unit tests. */
+export function answerValue(answer: Awaited<ReturnType<Context['userQuestions']['ask']>>, id: string): string {
   const item = answer.answers.find(entry => entry.id === id)
   const custom = item?.custom?.trim()
   if (custom !== undefined && custom.length > 0) return custom
@@ -186,14 +188,16 @@ function beginDeviceNotice(ctx: Context, invocation: CommandInvocation, event: E
   return { controller, settled }
 }
 
-function safeInteractionError(error: unknown): string {
-  if (!(error instanceof Error)) return 'unknown interaction error'
+/** Exported for unit tests. */
+export function safeInteractionError(error: unknown): string {
+  if (!(error instanceof Error)) return 'неизвестная ошибка взаимодействия'
   if (/cancel|abort/iu.test(error.message)) return 'вход отменён'
   if (/no user-questions provider/iu.test(error.message)) return 'текущая поверхность харнесса не может показать вопросы входа'
   return 'не удалось выполнить интерактивный вход'
 }
 
-function safeLoginError(error: unknown): string {
+/** Exported for unit tests. */
+export function safeLoginError(error: unknown): string {
   if (!(error instanceof Error)) return 'Не удалось выполнить вход OpenAI OAuth.'
   const message = error.message
   if (/cancel|abort/iu.test(message)) return 'Вход OpenAI OAuth отменён.'
@@ -206,7 +210,8 @@ function safeLoginError(error: unknown): string {
   return 'Не удалось выполнить вход OpenAI OAuth — запустите /codex-login ещё раз.'
 }
 
-function requestedMethod(rawInput: string): string | undefined {
+/** Exported for unit tests. */
+export function requestedMethod(rawInput: string): string | undefined {
   const value = rawInput.trim().toLowerCase()
   if (value.length === 0) return undefined
   if (value === 'browser') return 'browser'
@@ -214,7 +219,8 @@ function requestedMethod(rawInput: string): string | undefined {
   throw new Error('Использование: /codex-login [browser|device]')
 }
 
-function expiryDescription(credential: OAuthCredential): string {
+/** Exported for unit tests. */
+export function expiryDescription(credential: OAuthCredential): string {
   const remainingMinutes = Math.max(0, Math.ceil((credential.expires - Date.now()) / 60_000))
   return `${new Date(credential.expires).toISOString()} (примерно через ${remainingMinutes} мин)`
 }
@@ -330,7 +336,7 @@ export function apply(ctx: Context, config: Config): void {
       return { kind: 'error', text: safeLoginError(error) }
     } finally {
       loginInProgress = false
-      for (const notice of notices) notice.controller.abort('OAuth login settled')
+      for (const notice of notices) notice.controller.abort('Вход OAuth завершён')
       await Promise.allSettled(notices.map(notice => notice.settled))
     }
   }

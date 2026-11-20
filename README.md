@@ -1,94 +1,54 @@
 # dsh-openai-codex-oauth
 
-[简体中文](README.zh-CN.md)
+Вход в OpenAI Codex через подписку ChatGPT Plus/Pro по OAuth для DeepSeek Harness — без API-ключа. После входа модели, доступные вашей подписке, появляются в выборщике моделей группой «OpenAI Codex (подписка)». Плагин реализует интерактивный вход, хранение учётных данных, автоматическое обновление токена, команды проверки статуса и выхода.
 
-ChatGPT subscription OAuth for the `openai-codex` provider in DeepSeek Harness.
+Проект — форк [`dyuan311/dsh-openai-codex-oauth`](https://github.com/dyuan311/dsh-openai-codex-oauth) (MIT), адаптированный под DSH `0.1.0-rc.5` и русифицированный. Китайская документация upstream сохранена в [README.zh-CN.md](README.zh-CN.md).
 
-This package adds interactive login, credential persistence, token refresh, login status, and logout commands. DeepSeek Harness remains the agent runtime. The package uses the OAuth implementation exposed by `@earendil-works/pi-ai` and the model adapter supplied by `@deepseek-ai/dsh-llm-pi-ai`.
+## Требования
 
-Just for fun.
+- DSH-форк на базе `0.1.0-rc.5` с адаптером `llm-pi-ai` в базовом бандле.
+- Node.js `^22.19.0 || >=24`.
+- Подписка ChatGPT Plus/Pro с доступом к Codex. Отдельный OpenAI API-ключ не нужен.
+- Для входа через браузер — браузер на машине харнесса и свободный локальный порт `1455`.
 
-## How it works
-
-```text
-DeepSeek Harness
-  ├─ dsh-openai-codex-oauth
-  │    └─ @earendil-works/pi-ai OAuth implementation
-  │         └─ OpenAI browser or device-code authorization
-  └─ @deepseek-ai/dsh-llm-pi-ai
-       └─ openai-codex model requests
-```
-
-`@earendil-works/pi-ai` runs as a JavaScript library inside Harness. The Pi coding-agent application and its agent loop do not participate in this integration.
-
-The browser flow uses OAuth 2.0 Authorization Code with PKCE and a local callback at `http://localhost:1455/auth/callback`. A successful callback may display a Pi-branded local success page because that HTML is provided by the library.
-
-## Requirements
-
-- DeepSeek Harness `0.1.0-rc.6`
-- Node.js `22.19.0` or newer
-- pnpm
-- An OpenAI account with Codex subscription access
-- Local TCP port `1455` available during browser login
-
-## Build
-
-From the repository root:
+## Установка
 
 ```sh
-pnpm install --frozen-lockfile
-pnpm build
-pnpm pack
+dsh plugin --profile web add github:icas711/dsh-openai-codex-oauth
 ```
 
-The last command creates `dsh-openai-codex-oauth-0.1.1.tgz`.
+Затем перезапустите `dsh web`. Каталог `lib/` собран и закоммичен в репозиторий, поэтому при установке build-скрипты не выполняются — плагин готов к работе сразу после загрузки.
 
-## Install into DeepSeek Harness
+## Вход
 
-With a globally available `dsh` command:
-
-```sh
-dsh plugin --profile web add ./dsh-openai-codex-oauth-0.1.1.tgz
-dsh web
-```
-
-With the published Harness package through `npx`:
-
-```sh
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add ./dsh-openai-codex-oauth-0.1.1.tgz
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
-```
-
-The bundled Cordis patch loads `@deepseek-ai/dsh-llm-pi-ai`, configures its `openai-codex` provider to read `OPENAI_CODEX_ACCESS_TOKEN`, and loads this plugin.
-
-## Sign in
-
-Open the Harness Web interface and submit:
+В интерфейсе харнесса выполните:
 
 ```text
 /codex-login
 ```
 
-Select browser login in the prompt. The command also accepts an explicit method:
+Команда спросит способ входа:
+
+- **«Через браузер»** — откроется страница авторизации OpenAI в браузере на машине харнесса; после входа колбэк придёт на `localhost:1455`.
+- **«Код устройства»** — для headless-серверов и окружений без графики: откройте `auth.openai.com/codex/device` с любого устройства и введите показанный код.
+
+Если браузер находится на другой машине, удобен путь **«вставка callback URL»**: после входа OpenAI перенаправит браузер на `localhost:1455` (страница покажет ошибку соединения — это нормально), скопируйте полный адрес из адресной строки и вставьте его в поле вопроса — плагин завершит вход по этому адресу.
+
+Сокращения:
 
 ```text
-/codex-login browser
-/codex-login device
+/codex-login device   # сразу поток с кодом устройства
+/codex-status         # состояние входа и срок действия access-токена
+/codex-logout         # удалить учётные данные
 ```
 
-After authorization, select an `openai-codex` model from the model picker.
+## Как это работает
 
-## Commands
+Плагин хранит полный OAuth-credential и access-токен в хранилище учётных данных харнесса под ссылками `OPENAI_CODEX_OAUTH_CREDENTIAL` и `OPENAI_CODEX_ACCESS_TOKEN` (при локальном источнике по умолчанию — `~/.dsh/.credentials.yaml` с правами только для локального пользователя). Перед истечением срока токен обновляется автоматически — за `refreshBeforeMs` миллисекунд (по умолчанию 300 000, то есть 5 минут).
 
-| Command | Description |
-| --- | --- |
-| `/codex-login [browser\|device]` | Start OAuth authorization and store the credential. |
-| `/codex-status` | Show credential state, source, and access-token expiry. |
-| `/codex-logout` | Clear the stored OAuth credential and access token. |
+Модели предоставляются встроенным провайдером `openai-codex` адаптера `llm-pi-ai`: патч в [cordis.patch.yml](cordis.patch.yml) включает его в бандл и настраивает чтение access-токена из хранилища.
 
-## Configuration
-
-The generated Harness plugin entry accepts:
+Конфиг-поля плагина:
 
 ```yaml
 - id: openai-codex-oauth
@@ -98,24 +58,22 @@ The generated Harness plugin entry accepts:
     refreshBeforeMs: 300000
 ```
 
-The plugin stores the complete OAuth credential under `OPENAI_CODEX_OAUTH_CREDENTIAL` and the current access token under `OPENAI_CODEX_ACCESS_TOKEN`. With the default local credential source, Harness commonly writes these values to `~/.dsh/.credentials.yaml` with permissions scoped to the local user.
+## Ограничения и риски
 
-## Security and service terms
+- Это неофициальная интеграция поверх закрытых эндпоинтов Codex. OpenAI может изменить протокол или ограничить доступ — тогда потребуется обновление плагина или `pi-ai`.
+- OAuth-токены дают доступ к вашему аккаунту OpenAI. Не публикуйте их в issue, логах или конфигах; храните файл учётных данных в секрете.
+- Вход по коду устройства может быть отключён на стороне OpenAI — в этом случае используйте вход через браузер или вставку callback URL.
 
-OAuth access and refresh tokens grant access to the associated OpenAI account. Keep the Harness credential file private, keep the account under one user's control, and use the integration within the account's usage allowance. OpenAI service terms and plan-specific rules govern subscription access.
+## Разработка
 
-The Codex backend and its request format may change. A future OpenAI or `pi-ai` release can require a compatibility update.
+```sh
+corepack pnpm install
+corepack pnpm build   # компиляция src/ -> lib/
+corepack pnpm test    # модульные тесты (vitest)
+```
 
-## Acknowledgements
+Каталог `lib/` коммитится в репозиторий: установщик плагина не запускает сборку. Публикация изменений — через git_sync воркспейса в `icas711/dsh-openai-codex-oauth`.
 
-This project uses DeepSeek Harness's official [`@deepseek-ai/dsh-llm-pi-ai`](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-pi-ai) adapter to connect the Harness LLM interface with `pi-ai`. It uses [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai) for the OpenAI Codex OAuth and provider implementations.
+## Лицензия
 
-Both upstream projects are distributed under the MIT License. Their copyright notices and license texts are included in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Project status
-
-This is an independent community integration for DeepSeek Harness. OpenAI, DeepSeek, and Pi retain their respective names and trademarks.
-
-## License
-
-[MIT](LICENSE)
+[MIT](LICENSE). Проект наследуется от [`dyuan311/dsh-openai-codex-oauth`](https://github.com/dyuan311/dsh-openai-codex-oauth) (MIT); уведомления о правах зависимостей — в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). OpenAI, DeepSeek и Pi принадлежат своим владельцам; это независимая интеграция, не связанная с этими компаниями.
