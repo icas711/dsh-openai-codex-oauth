@@ -4,6 +4,7 @@
     providers:
       openai-codex:
         apiKeyEnv: OPENAI_CODEX_ACCESS_TOKEN
+        displayName: OpenAI Codex (подписка)
 
 - insert:
     - id: openai-codex-oauth

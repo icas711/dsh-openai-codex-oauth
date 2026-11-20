@@ -1,6 +1,6 @@
 {
   "name": "dsh-openai-codex-oauth",
-  "version": "0.1.1",
+  "version": "0.1.1-ru.1",
   "description": "ChatGPT Plus/Pro OAuth login for DeepSeek Harness openai-codex models",
   "type": "module",
   "main": "lib/index.js",
@@ -23,8 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "prepare": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json"
   },
   "dsh": {
     "bundle": {
