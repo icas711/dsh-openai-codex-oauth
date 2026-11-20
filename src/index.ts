@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
-import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
+import { credentialRef, type CredentialInfo, type CredentialRef, type ResolvedCredential } from '@deepseek-ai/dsh-credentials'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import type { AuthEvent, AuthInteraction, AuthPrompt, OAuthAuth, OAuthCredential } from '@earendil-works/pi-ai'
@@ -38,6 +38,107 @@ interface ResolvedConfig {
 interface DeviceNotice {
   controller: AbortController
   settled: Promise<void>
+}
+
+/**
+ * Session → owner registry of the web composition. Optional everywhere:
+ * without the web bundle the plugin degrades to the deployment-wide store.
+ */
+interface OwnerRegistryView {
+  ownerOf(sessionId: string): string | undefined
+}
+
+/** Durable session metadata view; the persistence header names the owner. */
+interface SessionPersistenceView {
+  inspect(sessionId: string): Promise<{ meta: { owner?: unknown } }>
+}
+
+/** Per-user credential store of the web composition (owner on every call). */
+export interface PersonalCredentialsView {
+  resolve(ref: CredentialRef, owner: string): Promise<ResolvedCredential | undefined>
+  describe(ref: CredentialRef, owner: string): Promise<CredentialInfo>
+  set(ref: CredentialRef, value: string, owner: string): Promise<void>
+  unset(ref: CredentialRef, owner: string): Promise<void>
+}
+
+/** Credential operations against one scope: the owner's store or the deployment store. */
+export interface CredentialStore {
+  readonly scopeLabel: string
+  resolve(ref: CredentialRef): Promise<ResolvedCredential | undefined>
+  describe(ref: CredentialRef): Promise<CredentialInfo>
+  set(ref: CredentialRef, value: string): Promise<void>
+  unset(ref: CredentialRef): Promise<void>
+}
+
+/** Read an optional service without declaring it in the ambient Context. */
+function serviceOf<T>(ctx: Context, key: string): T | undefined {
+  return (ctx as { get(key: string): unknown }).get(key) as T | undefined
+}
+
+/** Exported for unit tests. */
+export async function resolveOwnerFrom(
+  views: {
+    credentialScopes?: OwnerRegistryView | undefined
+    sessionPersistence?: SessionPersistenceView | undefined
+  },
+  sessionId: string | undefined,
+): Promise<string | undefined> {
+  if (sessionId === undefined) return undefined
+  const registered = views.credentialScopes?.ownerOf(sessionId)
+  if (registered !== undefined) return registered
+  const persistence = views.sessionPersistence
+  if (persistence === undefined) return undefined
+  try {
+    const { meta } = await persistence.inspect(sessionId)
+    return typeof meta.owner === 'string' && meta.owner.length > 0 ? meta.owner : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function resolveOwner(ctx: Context, sessionId: string | undefined): Promise<string | undefined> {
+  return resolveOwnerFrom({
+    credentialScopes: serviceOf<OwnerRegistryView>(ctx, 'credentialScopes'),
+    sessionPersistence: serviceOf<SessionPersistenceView>(ctx, 'sessionPersistence'),
+  }, sessionId)
+}
+
+/** Exported for unit tests. */
+export function scopeLabel(owner: string | undefined): string {
+  return owner === undefined ? 'общее хранилище харнесса' : `личное хранилище (${owner})`
+}
+
+/** Exported for unit tests. */
+export function personalStoreView(personal: PersonalCredentialsView, owner: string): CredentialStore {
+  return {
+    scopeLabel: scopeLabel(owner),
+    resolve: ref => personal.resolve(ref, owner),
+    describe: ref => personal.describe(ref, owner),
+    set: (ref, value) => personal.set(ref, value, owner),
+    unset: ref => personal.unset(ref, owner),
+  }
+}
+
+function deploymentStore(ctx: Context): CredentialStore {
+  const credentials = ctx.credentials
+  return {
+    scopeLabel: scopeLabel(undefined),
+    resolve: ref => credentials.resolve(ref),
+    describe: ref => credentials.describe(ref),
+    set: (ref, value) => credentials.set(ref, value),
+    unset: ref => credentials.unset(ref),
+  }
+}
+
+function storeFor(ctx: Context, owner: string | undefined): CredentialStore {
+  if (owner !== undefined) {
+    const personal = serviceOf<PersonalCredentialsView>(ctx, 'userCredentials')
+    // A session with an owner but without the per-user plane is practically
+    // impossible (both mount in the same web bundle); the deployment store is
+    // the loud, conservative fallback.
+    if (personal !== undefined) return personalStoreView(personal, owner)
+  }
+  return deploymentStore(ctx)
 }
 
 function oauthAuth(): OAuthAuth {
@@ -225,8 +326,23 @@ export function expiryDescription(credential: OAuthCredential): string {
   return `${new Date(credential.expires).toISOString()} (примерно через ${remainingMinutes} мин)`
 }
 
-async function assertWritable(ctx: Context, ref: CredentialRef): Promise<void> {
-  const info = await ctx.credentials.describe(ref)
+/** Exported for unit tests. */
+export function loginSuccessText(credential: OAuthCredential, owner: string | undefined): string {
+  return `Вход OpenAI Codex OAuth выполнен. Access-токен истекает: ${expiryDescription(credential)}. Хранилище: ${scopeLabel(owner)}.`
+}
+
+/** Exported for unit tests. */
+export function statusSuccessText(credential: OAuthCredential, owner: string | undefined): string {
+  return `OpenAI Codex OAuth: выполнен вход. Access-токен истекает: ${expiryDescription(credential)}. Хранилище: ${scopeLabel(owner)}.`
+}
+
+/** Exported for unit tests. */
+export function logoutSuccessText(owner: string | undefined): string {
+  return `Учётные данные OpenAI Codex OAuth удалены. Хранилище: ${scopeLabel(owner)}.`
+}
+
+async function assertWritable(store: CredentialStore, ref: CredentialRef): Promise<void> {
+  const info = await store.describe(ref)
   if (!info.writable) {
     throw new Error(`Ссылка на учётные данные ${ref} поступает из источника «только чтение» (${info.source ?? 'неизвестно'})`)
   }
@@ -255,21 +371,25 @@ export function apply(ctx: Context, config: Config): void {
   const exclusive = createExclusiveRunner()
   let loginInProgress = false
 
-  const persist = async (credential: OAuthCredential): Promise<void> => {
-    await ctx.credentials.set(resolved.oauthCredentialRef, JSON.stringify(credential))
-    await ctx.credentials.set(resolved.accessTokenRef, credential.access)
+  const persist = async (store: CredentialStore, credential: OAuthCredential): Promise<void> => {
+    await store.set(resolved.oauthCredentialRef, JSON.stringify(credential))
+    await store.set(resolved.accessTokenRef, credential.access)
   }
 
-  const ensureAccessToken = (signal: AbortSignal): Promise<void> => exclusive(async () => {
+  const ensureAccessToken = (owner: string | undefined, signal: AbortSignal): Promise<void> => exclusive(async () => {
     if (signal.aborted) {
       throw new LlmError('Запрос к OpenAI Codex прерван до завершения аутентификации.', 'ABORTED')
     }
-    const access = await ctx.credentials.resolve(resolved.accessTokenRef)
-    if (access !== undefined && access.value.length > 0 && access.source !== 'file') return
+    const store = storeFor(ctx, owner)
+    const stored = await store.resolve(resolved.oauthCredentialRef)
 
-    const stored = await ctx.credentials.resolve(resolved.oauthCredentialRef)
     if (stored === undefined) {
-      if (access !== undefined && access.value.length > 0) return
+      // An externally managed access token (launch environment on the
+      // deployment side, a hand-stored token on the web Models page for a
+      // personal scope) is trusted as-is: its source layer is not the
+      // plugin-writable file store.
+      const access = await store.resolve(resolved.accessTokenRef)
+      if (access !== undefined && access.value.length > 0 && access.source !== 'file') return
       throw new LlmError(
         'Вход OpenAI Codex OAuth не настроен. Выполните /codex-login и повторите запрос.',
         'AUTH',
@@ -288,8 +408,9 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (credential.expires > Date.now() + resolved.refreshBeforeMs) {
+      const access = await store.resolve(resolved.accessTokenRef)
       if (access === undefined || access.value !== credential.access) {
-        await ctx.credentials.set(resolved.accessTokenRef, credential.access)
+        await store.set(resolved.accessTokenRef, credential.access)
       }
       return
     }
@@ -303,7 +424,7 @@ export function apply(ctx: Context, config: Config): void {
         'AUTH',
       )
     }
-    await persist(refreshed)
+    await persist(store, refreshed)
   })
 
   const login = async (invocation: CommandInvocation): Promise<CommandResult> => {
@@ -313,8 +434,10 @@ export function apply(ctx: Context, config: Config): void {
     let authorizationUrl: string | undefined
     try {
       const method = requestedMethod(invocation.rawInput)
-      await assertWritable(ctx, resolved.oauthCredentialRef)
-      await assertWritable(ctx, resolved.accessTokenRef)
+      const owner = await resolveOwner(ctx, String(invocation.agent.id))
+      const store = storeFor(ctx, owner)
+      await assertWritable(store, resolved.oauthCredentialRef)
+      await assertWritable(store, resolved.accessTokenRef)
       const interaction: AuthInteraction = {
         signal: invocation.signal,
         prompt: prompt => answerAuthPrompt(ctx, invocation, prompt, method, authorizationUrl),
@@ -327,11 +450,8 @@ export function apply(ctx: Context, config: Config): void {
         },
       }
       const credential = await oauth.login(interaction)
-      await exclusive(() => persist(credential))
-      return {
-        kind: 'success',
-        text: `Вход OpenAI Codex OAuth выполнен. Access-токен истекает: ${expiryDescription(credential)}.`,
-      }
+      await exclusive(() => persist(store, credential))
+      return { kind: 'success', text: loginSuccessText(credential, owner) }
     } catch (error: unknown) {
       return { kind: 'error', text: safeLoginError(error) }
     } finally {
@@ -344,11 +464,13 @@ export function apply(ctx: Context, config: Config): void {
   const logout = async (invocation: CommandInvocation): Promise<CommandResult> => {
     if (invocation.rawInput.trim().length > 0) return { kind: 'error', text: 'Использование: /codex-logout' }
     try {
+      const owner = await resolveOwner(ctx, String(invocation.agent.id))
+      const store = storeFor(ctx, owner)
       await exclusive(async () => {
-        await ctx.credentials.unset(resolved.oauthCredentialRef)
-        await ctx.credentials.unset(resolved.accessTokenRef)
+        await store.unset(resolved.oauthCredentialRef)
+        await store.unset(resolved.accessTokenRef)
       })
-      return { kind: 'success', text: 'Учётные данные OpenAI Codex OAuth удалены.' }
+      return { kind: 'success', text: logoutSuccessText(owner) }
     } catch (error: unknown) {
       return { kind: 'error', text: safeLoginError(error) }
     }
@@ -356,21 +478,23 @@ export function apply(ctx: Context, config: Config): void {
 
   const status = async (invocation: CommandInvocation): Promise<CommandResult> => {
     if (invocation.rawInput.trim().length > 0) return { kind: 'error', text: 'Использование: /codex-status' }
-    const stored = await ctx.credentials.resolve(resolved.oauthCredentialRef)
+    const owner = await resolveOwner(ctx, String(invocation.agent.id))
+    const store = storeFor(ctx, owner)
+    const stored = await store.resolve(resolved.oauthCredentialRef)
     if (stored !== undefined) {
       try {
         const credential = parseOAuthCredential(stored.value)
-        return {
-          kind: 'success',
-          text: `OpenAI Codex OAuth: выполнен вход. Access-токен истекает: ${expiryDescription(credential)}. Источник учётных данных: ${stored.source}.`,
-        }
+        return { kind: 'success', text: statusSuccessText(credential, owner) }
       } catch {
         return { kind: 'error', text: 'Учётные данные OpenAI Codex OAuth повреждены — запустите /codex-login ещё раз.' }
       }
     }
-    const access = await ctx.credentials.resolve(resolved.accessTokenRef)
+    const access = await store.resolve(resolved.accessTokenRef)
     if (access !== undefined && access.value.length > 0) {
-      return { kind: 'success', text: `OpenAI Codex: access-токен задан. Источник учётных данных: ${access.source}.` }
+      return {
+        kind: 'success',
+        text: `OpenAI Codex: access-токен задан. Хранилище: ${scopeLabel(owner)}.`,
+      }
     }
     return { kind: 'success', text: 'OpenAI Codex: вход не настроен. Запустите /codex-login.' }
   }
@@ -392,9 +516,9 @@ export function apply(ctx: Context, config: Config): void {
     handler: status,
   })
 
-  ctx.on('agent/request', async ({ signal }, next) => {
+  ctx.on('agent/request', async ({ agent, signal }, next) => {
     const request = await next()
-    if (request.provider === PROVIDER) await ensureAccessToken(signal)
+    if (request.provider === PROVIDER) await ensureAccessToken(agent === undefined ? undefined : String(agent.id), signal)
     if (signal.aborted) {
       throw new LlmError('Запрос к OpenAI Codex прерван до завершения аутентификации.', 'ABORTED')
     }

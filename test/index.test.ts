@@ -3,11 +3,18 @@ import type { OAuthCredential } from '@earendil-works/pi-ai'
 import {
   answerValue,
   expiryDescription,
+  loginSuccessText,
+  logoutSuccessText,
   parseOAuthCredential,
+  personalStoreView,
   requestedMethod,
+  resolveOwnerFrom,
   safeInteractionError,
   safeLoginError,
+  scopeLabel,
+  statusSuccessText,
 } from '../src/index.js'
+import type { PersonalCredentialsView } from '../src/index.js'
 
 type AskAnswer = Parameters<typeof answerValue>[0]
 
@@ -137,5 +144,115 @@ describe('answerValue', () => {
   it('throws when the question was not answered', () => {
     expect(() => answerValue(askAnswer([]), 'q'))
       .toThrow('Для продолжения входа OAuth нужен ответ на вопрос')
+  })
+})
+
+function fakePersonal(): PersonalCredentialsView & {
+  calls: { op: string; ref: string; owner: string; value?: string }[]
+} {
+  const calls: { op: string; ref: string; owner: string; value?: string }[] = []
+  const values = new Map<string, string>()
+  return {
+    calls,
+    async resolve(ref, owner) {
+      calls.push({ op: 'resolve', ref, owner })
+      const value = values.get(ref)
+      return value === undefined ? undefined : { value, source: 'user' }
+    },
+    async describe(ref, owner) {
+      calls.push({ op: 'describe', ref, owner })
+      return values.has(ref)
+        ? { configured: true, source: 'user', writable: true }
+        : { configured: false, writable: true }
+    },
+    async set(ref, value, owner) {
+      calls.push({ op: 'set', ref, owner, value })
+      values.set(ref, value)
+    },
+    async unset(ref, owner) {
+      calls.push({ op: 'unset', ref, owner })
+      values.delete(ref)
+    },
+  }
+}
+
+describe('resolveOwnerFrom', () => {
+  it('returns the registry owner first', async () => {
+    const owner = await resolveOwnerFrom({
+      credentialScopes: { ownerOf: id => (id === 's1' ? 'exo2' : undefined) },
+      sessionPersistence: { inspect: async () => ({ meta: { owner: 'other' } }) },
+    }, 's1')
+    expect(owner).toBe('exo2')
+  })
+
+  it('falls back to the persistence header', async () => {
+    const owner = await resolveOwnerFrom({
+      sessionPersistence: { inspect: async (id: string) => ({ meta: { owner: id === 's2' ? 'exo' : '' } }) },
+    }, 's2')
+    expect(owner).toBe('exo')
+  })
+
+  it('returns undefined without services, without a session, or on a read failure', async () => {
+    expect(await resolveOwnerFrom({}, 's3')).toBeUndefined()
+    expect(await resolveOwnerFrom({ credentialScopes: { ownerOf: () => undefined } }, undefined)).toBeUndefined()
+    expect(await resolveOwnerFrom({
+      sessionPersistence: { inspect: async () => { throw new Error('no such session') } },
+    }, 's4')).toBeUndefined()
+    expect(await resolveOwnerFrom({
+      sessionPersistence: { inspect: async () => ({ meta: {} }) },
+    }, 's5')).toBeUndefined()
+  })
+})
+
+describe('scopeLabel', () => {
+  it('names the personal store by owner', () => {
+    expect(scopeLabel('exo2')).toBe('личное хранилище (exo2)')
+  })
+
+  it('names the deployment store without an owner', () => {
+    expect(scopeLabel(undefined)).toBe('общее хранилище харнесса')
+  })
+})
+
+describe('personalStoreView', () => {
+  it('binds the owner on every operation', async () => {
+    const personal = fakePersonal()
+    const store = personalStoreView(personal, 'exo2')
+    expect(store.scopeLabel).toBe('личное хранилище (exo2)')
+    await store.set('REF_A' as never, 'value-a')
+    await store.set('REF_B' as never, 'value-b')
+    const resolved = await store.resolve('REF_A' as never)
+    expect(resolved).toEqual({ value: 'value-a', source: 'user' })
+    await store.unset('REF_A' as never)
+    expect(await store.resolve('REF_A' as never)).toBeUndefined()
+    for (const call of personal.calls) {
+      expect(call.owner).toBe('exo2')
+    }
+  })
+})
+
+describe('owner-scoped result texts', () => {
+  const cred = credential(Date.now() + 30 * 60_000)
+
+  it('login names the scope', () => {
+    expect(loginSuccessText(cred, 'exo2'))
+      .toContain('Вход OpenAI Codex OAuth выполнен. Access-токен истекает:')
+    expect(loginSuccessText(cred, 'exo2')).toContain('Хранилище: личное хранилище (exo2).')
+    expect(loginSuccessText(cred, undefined)).toContain('Хранилище: общее хранилище харнесса.')
+  })
+
+  it('status names the scope', () => {
+    expect(statusSuccessText(cred, 'exo2'))
+      .toContain('OpenAI Codex OAuth: выполнен вход.')
+    expect(statusSuccessText(cred, undefined)).toContain('Хранилище: общее хранилище харнесса.')
+  })
+
+  it('logout names the scope', () => {
+    expect(logoutSuccessText('exo2')).toBe(
+      'Учётные данные OpenAI Codex OAuth удалены. Хранилище: личное хранилище (exo2).',
+    )
+    expect(logoutSuccessText(undefined)).toBe(
+      'Учётные данные OpenAI Codex OAuth удалены. Хранилище: общее хранилище харнесса.',
+    )
   })
 })
