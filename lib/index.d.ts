@@ -51,6 +51,15 @@ export interface PersonalCredentialsView {
     set(ref: CredentialRef, value: string, owner: string): Promise<void>;
     unset(ref: CredentialRef, owner: string): Promise<void>;
 }
+/**
+ * Личные секции настроек веб-композиции (шов userSettings): карточки
+ * провайдеров на странице «Модели» — секция llm-pi-ai, поле providers.<route>.
+ * Face синхронный, реализация может быть асинхронной — вызовы идут через await.
+ */
+export interface PersonalSettingsView {
+    sectionOf(ns: string, owner: string): Promise<object | undefined> | object | undefined;
+    writeSection(ns: string, owner: string, section: object): Promise<void> | void;
+}
 /** Credential operations against one scope: the owner's store or the deployment store. */
 export interface CredentialStore {
     readonly scopeLabel: string;
@@ -80,6 +89,21 @@ export declare function resolveOwnerFrom(views: {
 }, sessionId: string | undefined): Promise<string | undefined>;
 /** Exported for unit tests. */
 export declare function scopeLabel(owner: string | undefined): string;
+/**
+ * Секция llm-pi-ai с личным профилем маршрута openai-codex (карточка на
+ * странице «Модели» и группа моделей в выборщике чата — без глобального
+ * маршрута). Существующий профиль не перезаписывается: ручные настройки
+ * (список моделей) переживают повторный вход. Профиль пуст — модели и
+ * endpoint берёт каталог pi-ai, ключ — конвенциональная ссылка из стора.
+ * Exported for unit tests.
+ */
+export declare function withCodexProviderProfile(section: object | undefined): object;
+/**
+ * Секция llm-pi-ai без личного профиля маршрута openai-codex; undefined, если
+ * профиля и не было. Другие поля секции и другие провайдеры не трогаются.
+ * Exported for unit tests.
+ */
+export declare function withoutCodexProviderProfile(section: object | undefined): object | undefined;
 /** Exported for unit tests. */
 export declare function personalStoreView(personal: PersonalCredentialsView, owner: string): CredentialStore;
 /** Exported for unit tests. */

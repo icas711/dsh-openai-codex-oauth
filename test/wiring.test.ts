@@ -170,4 +170,66 @@ describe('apply wiring', () => {
     apply(fake.ctx as never, {} as Config)
     expect(spy).toHaveBeenCalledTimes(1)
   })
+
+  it('agent/request syncs the conventional api-key ref beside the access token', async () => {
+    const fake = fakeCtx()
+    const credential: OAuthCredential = { type: 'oauth', access: 'jwt-token', refresh: 'r', expires: Date.now() + 3600_000 }
+    const stored: Record<string, string> = { OPENAI_CODEX_OAUTH_CREDENTIAL: JSON.stringify(credential) }
+    const sets: string[] = []
+    fake.ctx.credentials.resolve = async (ref: string) => {
+      const value = stored[ref]
+      return value === undefined ? undefined : { value, source: 'file' }
+    }
+    fake.ctx.credentials.set = async (ref: string, value: string) => {
+      stored[ref] = value
+      sets.push(ref)
+    }
+    const handlers: Array<(payload: unknown, next: () => Promise<unknown>) => Promise<unknown>> = []
+    fake.ctx.on = ((_event: string, handler: never) => {
+      handlers.push(handler)
+      return () => undefined
+    }) as typeof fake.ctx.on
+    apply(fake.ctx as never, {} as Config)
+    expect(handlers).toHaveLength(1)
+    const request = await handlers[0]({ agent: { id: 's' }, signal: new AbortController().signal }, async () => ({ provider: 'openai-codex', model: 'gpt-5.6-sol' }))
+    expect(request).toEqual({ provider: 'openai-codex', model: 'gpt-5.6-sol' })
+    expect(stored.OPENAI_CODEX_ACCESS_TOKEN).toBe('jwt-token')
+    expect(stored.OPENAI_CODEX_API_KEY).toBe('jwt-token')
+    expect(sets).toEqual(['OPENAI_CODEX_ACCESS_TOKEN', 'OPENAI_CODEX_API_KEY'])
+  })
+
+  it('codex-logout removes the credentials and the personal provider profile', async () => {
+    const fake = fakeCtx()
+    const credential: OAuthCredential = { type: 'oauth', access: 'jwt-token', refresh: 'r', expires: Date.now() + 3600_000 }
+    const personalStore: Record<string, string> = {
+      OPENAI_CODEX_OAUTH_CREDENTIAL: JSON.stringify(credential),
+      OPENAI_CODEX_ACCESS_TOKEN: 'jwt-token',
+      OPENAI_CODEX_API_KEY: 'jwt-token',
+    }
+    const unset: string[] = []
+    const sections = new Map<string, object>([
+      ['exo2', { providers: { 'zai-coding-cn': { baseURL: 'https://z.ai/v1' }, 'openai-codex': {} } }],
+    ])
+    fake.services.credentialScopes = { ownerOf: () => 'exo2' }
+    fake.services.userCredentials = {
+      resolve: async (ref: string) => {
+        const value = personalStore[ref]
+        return value === undefined ? undefined : { value, source: 'user' }
+      },
+      describe: async () => ({ writable: true, source: 'user' }),
+      set: async (ref: string, value: string) => { personalStore[ref] = value },
+      unset: async (ref: string) => { unset.push(ref); delete personalStore[ref] },
+    }
+    fake.services.userSettings = {
+      sectionOf: async (_ns: string, owner: string) => sections.get(owner),
+      writeSection: async (_ns: string, owner: string, section: object) => { sections.set(owner, section) },
+    }
+    apply(fake.ctx as never, {} as Config)
+    const logout = fake.commands.find(command => command.name === 'codex-logout')
+    if (logout === undefined) throw new Error('codex-logout not registered')
+    const result = await logout.handler({ agent: { id: 'session-1' }, signal: new AbortController().signal, rawInput: '' })
+    expect(result.kind).toBe('success')
+    expect(unset.sort()).toEqual(['OPENAI_CODEX_ACCESS_TOKEN', 'OPENAI_CODEX_API_KEY', 'OPENAI_CODEX_OAUTH_CREDENTIAL'])
+    expect(sections.get('exo2')).toEqual({ providers: { 'zai-coding-cn': { baseURL: 'https://z.ai/v1' } } })
+  })
 })

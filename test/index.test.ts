@@ -14,6 +14,8 @@ import {
   scopeLabel,
   statusSuccessText,
   usageCommandHint,
+  withCodexProviderProfile,
+  withoutCodexProviderProfile,
 } from '../src/index.js'
 import type { PersonalCredentialsView } from '../src/index.js'
 
@@ -265,5 +267,35 @@ describe('usageCommandHint', () => {
     expect(usageCommandHint('refresh')).toBe('refresh')
     expect(usageCommandHint(' Refresh ')).toBe('refresh')
     expect(usageCommandHint('anything else')).toBe('error')
+  })
+})
+
+describe('codex provider profile section', () => {
+  it('adds an empty profile to a missing or profile-less section', () => {
+    expect(withCodexProviderProfile(undefined)).toEqual({ providers: { 'openai-codex': {} } })
+    expect(withCodexProviderProfile({})).toEqual({ providers: { 'openai-codex': {} } })
+    expect(withCodexProviderProfile({ providers: {} })).toEqual({ providers: { 'openai-codex': {} } })
+  })
+
+  it('keeps other providers and section fields, preserves an existing codex profile as-is', () => {
+    const zai = { baseURL: 'https://z.ai/v1' }
+    expect(withCodexProviderProfile({ providers: { 'zai-coding-cn': zai } })).toEqual({
+      providers: { 'zai-coding-cn': zai, 'openai-codex': {} },
+    })
+    expect(withCodexProviderProfile({ defaultInput: ['text'], providers: {} })).toEqual({
+      defaultInput: ['text'],
+      providers: { 'openai-codex': {} },
+    })
+    const customized = { providers: { 'openai-codex': { models: [{ id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' }] } } }
+    expect(withCodexProviderProfile(customized)).toBe(customized)
+  })
+
+  it('removes only the codex profile and leaves the section alone without one', () => {
+    expect(withoutCodexProviderProfile(undefined)).toBeUndefined()
+    expect(withoutCodexProviderProfile({})).toEqual({})
+    const withZai = { providers: { 'zai-coding-cn': { baseURL: 'x' }, 'openai-codex': {} } }
+    expect(withoutCodexProviderProfile(withZai)).toEqual({ providers: { 'zai-coding-cn': { baseURL: 'x' } } })
+    const onlyCodex = { providers: { 'openai-codex': {} } }
+    expect(withoutCodexProviderProfile(onlyCodex)).toEqual({ providers: {} })
   })
 })

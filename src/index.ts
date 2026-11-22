@@ -22,6 +22,18 @@ export const inject = ['commands', 'credentials', 'userQuestions']
 const PROVIDER = 'openai-codex'
 const DEFAULT_OAUTH_CREDENTIAL_REF = 'OPENAI_CODEX_OAUTH_CREDENTIAL'
 const DEFAULT_ACCESS_TOKEN_REF = 'OPENAI_CODEX_ACCESS_TOKEN'
+/**
+ * Конвенциональная ссылка ключа маршрута openai-codex — формула
+ * providerApiKeyRef харнесса (id маршрута → верхний регистр + «_API_KEY»).
+ * Именно её читает адаптер llm-pi-ai для личного профиля владельца (правило
+ * R6: личный профиль не называет credential, ключ берётся по конвенциональной
+ * ссылке из личного стора) и карточка на странице «Модели». Ссылки
+ * OAuth-credential и access-токена остаются для нужд самого плагина
+ * (refresh, прямые вызовы бэкенда Codex).
+ */
+const CONVENTIONAL_API_KEY_REF = 'OPENAI_CODEX_API_KEY'
+/** Секция настроек адаптера llm-pi-ai и маршрут внутри неё (карточка «Модели»). */
+const PI_AI_SETTINGS_NS = 'llm-pi-ai'
 const DEFAULT_REFRESH_BEFORE_MS = 5 * 60 * 1000
 const PRESENCE_REFRESH_INTERVAL_MS = 30_000
 const WAIT_FOR_CALLBACK_LABEL = 'Жду автоматического возврата из браузера'
@@ -68,6 +80,7 @@ export const Config: z<Config> = z.object({
 interface ResolvedConfig {
   oauthCredentialRef: CredentialRef
   accessTokenRef: CredentialRef
+  conventionalApiKeyRef: CredentialRef
   refreshBeforeMs: number
   responsesUrl: string
   usageUrl: string
@@ -104,6 +117,16 @@ export interface PersonalCredentialsView {
   describe(ref: CredentialRef, owner: string): Promise<CredentialInfo>
   set(ref: CredentialRef, value: string, owner: string): Promise<void>
   unset(ref: CredentialRef, owner: string): Promise<void>
+}
+
+/**
+ * Личные секции настроек веб-композиции (шов userSettings): карточки
+ * провайдеров на странице «Модели» — секция llm-pi-ai, поле providers.<route>.
+ * Face синхронный, реализация может быть асинхронной — вызовы идут через await.
+ */
+export interface PersonalSettingsView {
+  sectionOf(ns: string, owner: string): Promise<object | undefined> | object | undefined
+  writeSection(ns: string, owner: string, section: object): Promise<void> | void
 }
 
 /** Credential operations against one scope: the owner's store or the deployment store. */
@@ -209,6 +232,38 @@ function resolveOwnerDiagOf(ctx: Context, sessionId: string | undefined): Promis
 /** Exported for unit tests. */
 export function scopeLabel(owner: string | undefined): string {
   return owner === undefined ? 'общее хранилище харнесса' : `личное хранилище (${owner})`
+}
+
+/**
+ * Секция llm-pi-ai с личным профилем маршрута openai-codex (карточка на
+ * странице «Модели» и группа моделей в выборщике чата — без глобального
+ * маршрута). Существующий профиль не перезаписывается: ручные настройки
+ * (список моделей) переживают повторный вход. Профиль пуст — модели и
+ * endpoint берёт каталог pi-ai, ключ — конвенциональная ссылка из стора.
+ * Exported for unit tests.
+ */
+export function withCodexProviderProfile(section: object | undefined): object {
+  const current = section as { providers?: Record<string, unknown> } | undefined
+  const providers = current?.providers
+  if (providers !== undefined && providers[PROVIDER] !== undefined) return section ?? {}
+  return {
+    ...(section ?? {}),
+    providers: { ...(providers ?? {}), [PROVIDER]: {} },
+  }
+}
+
+/**
+ * Секция llm-pi-ai без личного профиля маршрута openai-codex; undefined, если
+ * профиля и не было. Другие поля секции и другие провайдеры не трогаются.
+ * Exported for unit tests.
+ */
+export function withoutCodexProviderProfile(section: object | undefined): object | undefined {
+  const current = section as { providers?: Record<string, unknown> } | undefined
+  const providers = current?.providers
+  if (providers === undefined || providers[PROVIDER] === undefined) return section
+  const rest = { ...providers }
+  delete rest[PROVIDER]
+  return { ...(section ?? {}), providers: rest }
 }
 
 /** Exported for unit tests. */
@@ -472,6 +527,7 @@ function resolveConfig(config: Config): ResolvedConfig {
   return {
     oauthCredentialRef: credentialRef(config.oauthCredentialRef ?? DEFAULT_OAUTH_CREDENTIAL_REF),
     accessTokenRef: credentialRef(DEFAULT_ACCESS_TOKEN_REF),
+    conventionalApiKeyRef: credentialRef(CONVENTIONAL_API_KEY_REF),
     refreshBeforeMs: config.refreshBeforeMs ?? DEFAULT_REFRESH_BEFORE_MS,
     responsesUrl: config.responsesUrl ?? DEFAULT_CODEX_RESPONSES_URL,
     usageUrl: config.usageUrl ?? DEFAULT_USAGE_URL,
@@ -500,9 +556,47 @@ export function apply(ctx: Context, config: Config): void {
   let credentialPresent = false
   let presenceCheckedAt = 0
 
+  /** Держать обе ключевые ссылки (access-токен и конвенциональную) актуальными. */
+  const syncAccessToken = async (store: CredentialStore, access: string): Promise<void> => {
+    for (const ref of [resolved.accessTokenRef, resolved.conventionalApiKeyRef]) {
+      const stored = await store.resolve(ref)
+      if (stored === undefined || stored.value !== access) await store.set(ref, access)
+    }
+  }
+
   const persist = async (store: CredentialStore, credential: OAuthCredential): Promise<void> => {
     await store.set(resolved.oauthCredentialRef, JSON.stringify(credential))
-    await store.set(resolved.accessTokenRef, credential.access)
+    await syncAccessToken(store, credential.access)
+  }
+
+  /**
+   * Карточка провайдера на странице «Модели» владельца: личный профиль
+   * llm-pi-ai → providers.openai-codex. Глобального маршрута у плагина нет,
+   * поэтому профиль — единственное, что включает модели ChatGPT в выборщике
+   * и стриминг для владельца. Отказ не роняет вход: ключи уже сохранены.
+   */
+  const ensureProviderProfile = async (owner: string | undefined): Promise<void> => {
+    if (owner === undefined) return
+    const store = serviceOf<PersonalSettingsView>(ctx, 'userSettings')
+    if (store === undefined) {
+      ctx.logger.info('openai-codex-oauth: сервис личных настроек не установлен — карточка провайдера не создана')
+      return
+    }
+    const section = await store.sectionOf(PI_AI_SETTINGS_NS, owner)
+    const next = withCodexProviderProfile(section)
+    if (next === section) return
+    await store.writeSection(PI_AI_SETTINGS_NS, owner, next)
+  }
+
+  /** Убрать карточку провайдера (зеркало кнопки «Удалить» на странице «Модели»). */
+  const removeProviderProfile = async (owner: string | undefined): Promise<void> => {
+    if (owner === undefined) return
+    const store = serviceOf<PersonalSettingsView>(ctx, 'userSettings')
+    if (store === undefined) return
+    const section = await store.sectionOf(PI_AI_SETTINGS_NS, owner)
+    const next = withoutCodexProviderProfile(section)
+    if (next === section) return
+    await store.writeSection(PI_AI_SETTINGS_NS, owner, next ?? {})
   }
 
   const refreshCredentialPresence = (): Promise<void> => (async () => {
@@ -574,10 +668,7 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     if (credential.expires > Date.now() + resolved.refreshBeforeMs) {
-      const access = await store.resolve(resolved.accessTokenRef)
-      if (access === undefined || access.value !== credential.access) {
-        await store.set(resolved.accessTokenRef, credential.access)
-      }
+      await syncAccessToken(store, credential.access)
       credentialPresent = true
       return
     }
@@ -653,6 +744,11 @@ export function apply(ctx: Context, config: Config): void {
       const credential = await oauth.login(interaction)
       await exclusive(() => persist(store, credential))
       credentialPresent = true
+      try {
+        await ensureProviderProfile(owner)
+      } catch (error: unknown) {
+        ctx.logger.warn(`openai-codex-oauth: не удалось создать карточку провайдера: ${error instanceof Error ? error.message : String(error)}`)
+      }
       return { kind: 'success', text: loginSuccessText(credential, owner) }
     } catch (error: unknown) {
       return { kind: 'error', text: safeLoginError(error) }
@@ -671,7 +767,13 @@ export function apply(ctx: Context, config: Config): void {
       await exclusive(async () => {
         await store.unset(resolved.oauthCredentialRef)
         await store.unset(resolved.accessTokenRef)
+        await store.unset(resolved.conventionalApiKeyRef)
       })
+      try {
+        await removeProviderProfile(owner)
+      } catch (error: unknown) {
+        ctx.logger.warn(`openai-codex-oauth: не удалось убрать карточку провайдера: ${error instanceof Error ? error.message : String(error)}`)
+      }
       await refreshCredentialPresence()
       return { kind: 'success', text: logoutSuccessText(owner) }
     } catch (error: unknown) {

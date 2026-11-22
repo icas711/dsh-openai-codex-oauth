@@ -1,11 +1,7 @@
-- id: llm-pi-ai
-  name: '@deepseek-ai/dsh-llm-pi-ai'
-  config:
-    providers:
-      openai-codex:
-        apiKeyEnv: OPENAI_CODEX_ACCESS_TOKEN
-        displayName: OpenAI Codex (подписка)
-
+# Глобальный маршрут openai-codex больше не патчим: провайдер добавляется
+# каждому пользователю личной карточкой на странице «Модели» (плагин создаёт
+# её при /codex-login, см. README). Это требует правок форка dsh — см.
+# codex-oauth-prompts/04 в репозитории форка.
 - insert:
     - id: openai-codex-oauth
       name: dsh-openai-codex-oauth
